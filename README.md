@@ -1,0 +1,1 @@
+# Implementing [Learning nonlinear state–space models using autoencoders, Masti & Bemporad 2021](https://doi.org/10.1016/j.automatica.2021.109666)
