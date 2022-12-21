@@ -57,6 +57,15 @@ for I in test_dataloader:
         preds = model.predict(*I[:2])
         _, _, ground_truth = model.get_x_kp1(*I[:2])
 
-        res.append((preds.numpy(), ground_truth.numpy()))
+        res.append([preds.numpy().reshape(-1,),
+                   ground_truth.numpy().reshape(-1,)])
+
+        import pandas as pd
+        df = pd.DataFrame()
+        df['ypred'], df['y'] = res
+        df.to_feather('out.feather')
+
+# for outs in zip(*res):
+
 
 pass
