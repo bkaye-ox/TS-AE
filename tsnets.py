@@ -8,7 +8,7 @@ class LinNet(torch.nn.Module):
     def __init__(self, dim_in, dim_out) -> None:
         super().__init__()
         self.flatten = nn.Flatten()
-        self.renet = nn.Sequential(
+        self.relunet = nn.Sequential(
             nn.Linear(in_features=dim_in, out_features=30),
             nn.SiLU(),
             nn.Linear(in_features=30, out_features=30),
@@ -20,7 +20,7 @@ class LinNet(torch.nn.Module):
 
     def forward(self, x):
         y = self.flatten(x)
-        p = self.renet(y)
+        p = self.relunet(y)
         return self.lin(p)
 
 
@@ -53,10 +53,10 @@ class FNet(torch.nn.Module):
         A = self.A(X)
         B = self.B(X)
 
-        return (torch.bmm(A, torch.cat((x, torch.ones((x.shape[0], 1))), axis=1).reshape(-1, A.shape[2], 1)) + torch.bmm(B, u.reshape((-1,u.shape[1],1)))).reshape(-1,A.shape[1])
+        return (torch.bmm(A, torch.cat((x, torch.ones((x.shape[0], 1))), axis=1).reshape(-1, A.shape[2], 1)) + torch.bmm(B, u.reshape((-1, u.shape[1], 1)))).reshape(-1, A.shape[1])
 
 
-class DNet(torch.nn.Module):
+class DecoderNet(torch.nn.Module):
     def __init__(self, nx, nu, ny) -> None:
         super().__init__()
 
@@ -67,16 +67,25 @@ class DNet(torch.nn.Module):
         x = X[:, :self.nx]
 
         C = self.C(X)
-        return torch.bmm(C, torch.cat((x, torch.ones((x.shape[0], 1))), axis=1).reshape(-1,C.shape[2],1)).reshape(-1,C.shape[1])
+        return torch.bmm(C, torch.cat((x, torch.ones((x.shape[0], 1))), axis=1).reshape(-1, C.shape[2], 1)).reshape(-1, C.shape[1])
 
 
-class ENet(torch.nn.Module):
+class EncoderNet(torch.nn.Module):
     def __init__(self, nI, nx) -> None:
         super().__init__()
         self.encoder = LinNet(nI, nx)
 
     def forward(self, x):
         return self.encoder(x)
+
+
+class SNet(nn.Module):
+    def __init__(self, nx, ny, nu) -> None:
+        super().__init__()
+        self.lnet = LinNet(nx+nu+ny, nx)
+
+    def forward(self, xyu_k):
+        return self.lnet(xyu_k)
 
 
 class TSNet(torch.nn.Module):
@@ -89,17 +98,26 @@ class TSNet(torch.nn.Module):
 
         nI = ny*N_y + nu*N_u  # length of Information vector
 
-        self.e = ENet(nI=nI, nx=nx)
-        self.d = DNet(nx=nx, nu=nu, ny=ny)
+        self.e = EncoderNet(nI=nI, nx=nx)
+        self.d = DecoderNet(nx=nx, nu=nu, ny=ny)
         self.f = FNet(nx=nx, nu=nu)
+
+        self.s = SNet(nx=nx, nu=nu, ny=ny)
 
     def forward(self, I_k, I_kp1):
         x_k_est = self.e(I_k)
 
         u_k = self._u_k(I_k)
+        u_kp1 = self._u_k(I_kp1)
+
         z_k = torch.cat((x_k_est, u_k), dim=1)
 
-        u_kp1 = self._u_k(I_kp1)
+        y_k = self._y_k(I_k)
+        xyu_k = torch.cat((x_k_est, y_k, u_k), dim=1)
+        x_kp1_obs = self.s(xyu_k)
+        z_kp1_obs = torch.cat((x_kp1_obs, u_kp1), dim=1)
+        y_kp1_obs = self.d(z_kp1_obs)
+
         x_kp1_pred = self.f(z_k)
         z_kp1_pred = torch.cat((x_kp1_pred, u_kp1), dim=1)
 
@@ -129,9 +147,23 @@ class TSNet(torch.nn.Module):
         ub = self.ny
         return I_k[:, lb:ub]
 
+    def predict(self, I_k, I_kp1):
+        x_k_est = self.e(I_k)
+        u_k = self._u_k(I_k)
+
+        z_k = torch.cat((x_k_est, u_k), dim=1)
+
+        x_kp1_pred = self.f(z_k)
+
+        u_kp1 = self._u_k(I_kp1)
+        z_kp1_pred = torch.cat((x_kp1_pred, u_kp1), dim=1)
+        y_kp1_pred = self.d(z_kp1_pred)
+
+        return y_kp1_pred
+
 
 class TSDataSet(dset.Dataset):
-    def __init__(self, src, N_pred, nx, N_y, N_u) -> None:
+    def __init__(self, src, N_pred, nx, N_y, N_u, test=False) -> None:
         self.N_pred = N_pred
 
         self.nx = nx
@@ -140,7 +172,7 @@ class TSDataSet(dset.Dataset):
 
         if type(src) is str:
             df = pd.read_feather(src)
-            self.setup(df)
+            self.setup(df, test)
 
     def __len__(self):
         return self.len
@@ -164,7 +196,10 @@ class TSDataSet(dset.Dataset):
             'N_u': self.N_u,
         }
 
-    def setup(self, df):
+    def setup(self, df, test):
+
+        split = int(len(df)*0.9)
+        df = df[split:] if test else df[:split]
 
         y_cols = ['o2pp']
         u_cols = ['o2duty', 'apduty']
