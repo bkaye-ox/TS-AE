@@ -22,7 +22,7 @@ phase2_loss = tsnets.TSLoss(0, 10, 1)
 optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-5)
 
 
-def train(dataloader, model, loss_fn, optimizer, N_epochs):
+def train(dataloader, model, loss_fn, optimizer, N_epochs, losses):
     size = len(dataloader.dataset)
     model.train()
     for epoch in range(N_epochs):
@@ -30,24 +30,34 @@ def train(dataloader, model, loss_fn, optimizer, N_epochs):
             X = [x.to(device) for x in X]
 
             # Compute prediction error
-            pred = model(*X)
-            out = model.get_x_kp1(*X[:2])
-            loss = loss_fn(pred, out)
+            # pred = model(*X)
+            # out = model.get_x_kp1(*X[:2])
+            # loss = loss_fn(pred, out)
+
+            loss = model.train_loss(*X)
+
+            
 
             # Backpropagation
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            if batch % 100 == 0:
-                loss, current = loss.item(), batch * len(X)
-                print(f"loss: {loss:>7f}  [{current:>5d}/{size:>5d}]")
+            losses.append(loss.item())
 
+            if batch % 100 == 0:
+                # loss, current = loss.item(), batch * len(X)
+                current = batch * len(X)
+
+                print(f"loss: {losses[-1]:>7f}  [{current:>5d}/{size:>5d}]")
+
+
+losses = []
 
 train(dataloader=loader, model=model, loss_fn=phase1_loss,
-      optimizer=optimizer, N_epochs=50)
+      optimizer=optimizer, N_epochs=300, losses=losses)
 train(dataloader=loader, model=model, loss_fn=phase2_loss,
-      optimizer=optimizer, N_epochs=50)
+      optimizer=optimizer, N_epochs=300, losses=losses)
 
 model.eval()
 
