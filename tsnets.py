@@ -89,11 +89,12 @@ class SNet(nn.Module):
 
 
 class TSNet(torch.nn.Module):
-    def __init__(self, nx, nu, ny, N_y, N_u, ) -> None:
+    def __init__(self, nx, nu, ny, N_y, N_u, loss_fn) -> None:
         super().__init__()
 
         self.ny = ny
         self.nu = nu
+        self.nx = nx
         self.N_y = N_y
 
         nI = ny*N_y + nu*N_u  # length of Information vector
@@ -103,6 +104,8 @@ class TSNet(torch.nn.Module):
         self.fnet = FNet(nx=nx, nu=nu)
 
         self.snet = SNet(nx=nx, nu=nu, ny=ny)
+
+        self.loss = loss_fn
 
     def forward_1(self, I_km1, I_k, I_kp1):
         x_k_est = self._encode(I_km1=I_km1)
@@ -134,6 +137,16 @@ class TSNet(torch.nn.Module):
         # est <=> ground truth, pred <=> prediction
         return y_k_est, x_kp1_pred, y_kp1_pred, y_kp1_est
 
+    def predict1(self, I_km1, u_k):
+        '''return predicted y(k) given I(k-1), u(k)'''
+        x_k = self._encode(I_km1=I_km1)
+        z_k = TSNet._z_k_alt(u_k=u_k, x_k=x_k)
+        y_k = self._decode(z_k=z_k)
+        # x_kp1 = self._transition(z_km1=z_k)
+        # self.decode/
+
+        return y_k
+
     def get_x_kp1(self, I_k, I_kp1):
         with torch.no_grad():
             x_kp1 = self.enet(I_kp1)
@@ -152,34 +165,39 @@ class TSNet(torch.nn.Module):
         return I_k[:, lb:ub]
 
     def predict_F_steps(self, I_km1, u_seq, F):
+        # TODO rewrite, wtf was I doing?
+
         # u_seq from k to k + F, dim {batch, nu, F}
 
-        x_f = self.enet(I_km1)
         x_f = self._encode(I_km1=I_km1)
 
         # _f regers to k+f index
 
         batch_size = I_km1.shape[0]
 
-        y_fs = torch.zeros((I_km1.shape[0], self.ny, F+1))
+        y_fs = torch.zeros((batch_size, self.ny, F))
         x_fs = torch.zeros((batch_size, self.nx, F))
 
-        y_fs[:, :, 0] = y_fs
+        # y_fs[:, :, 0] = y_fs
 
         for f in range(F):
             u_k = u_seq[:, :, f]
-            z_f = torch.cat((x_f, u_k), dim=1)
+            # z_f = torch.cat((x_f, u_k), dim=1)
+
+            z_f = TSNet._z_k_alt(x_k=x_f, u_k=u_k)
             # z_f =
 
-            x_fp1 = self.fnet(z_f)
+            x_fp1 = self._transition(z_km1=z_f)
             x_fs[:, :, f] = x_fp1
 
             u_kp1 = u_seq[:, :, f]
 
-            z_kp1_pred = torch.cat((x_fp1, u_kp1), dim=1)
-            y_fp1_pred = self.dnet(z_kp1_pred)
+            # z_kp1_pred = torch.cat((x_fp1, u_kp1), dim=1)
+            z_kp1_pred = TSNet._z_k_alt(x_k=x_fp1, u_k=u_kp1)
+            y_fp1_pred = self._decode(z_k=z_kp1_pred)
 
-            y_fs[:, :, f+1] = y_fp1_pred
+            y_fs[:, :, f] = y_fp1_pred
+
             x_f = x_fp1
 
         # predicted state vector k+1 to k+F, and predicted output k to k+F
@@ -189,7 +207,7 @@ class TSNet(torch.nn.Module):
         # TODO figure out
         batch_size = Is[0].shape[0]
 
-        F = len(Is) - 2 #
+        F = len(Is) - 2
         if F <= 0:
             raise Exception('insufficient Is supplied')
 
@@ -201,7 +219,7 @@ class TSNet(torch.nn.Module):
         yres_list = []
         xtruth_list = []
         ytruth_list = []
-        for f in range(1, F):  # 1 to F-1
+        for f in range(1, F+1):  # 1 to F-1
             # y_k_est, x_kp1_pred, y_kp1_pred, y_kp1_est = self.forward(
             #     Is[f:f+3])
 
@@ -209,8 +227,9 @@ class TSNet(torch.nn.Module):
 
             # predict to F
             x_fs_pred, y_fs_pred = self.predict_F_steps(
-                Is[f-1], u_r_seq, F-f)  # 1 to F-f, 0 to F-f
-            x_truths, y_truths = self.truths(Is[f-1:])
+                Is[f-1], u_r_seq, F-f+1)  # 1 to F-f, 0 to F-f
+            # NOTE - CHECK THAT THIS IS THE RIGHT SHAPE
+            x_truths, y_truths = self.truths(Is[f:])
             xres_list.append(x_fs_pred)
             yres_list.append(y_fs_pred)
             xtruth_list.append(x_truths)
@@ -235,13 +254,20 @@ class TSNet(torch.nn.Module):
         u_k = self._u_k(I_k)
         return torch.cat((x_k, u_k), dim=1)
 
-    def train_loss(self, Is, F, **params):
+    def _z_k_alt(x_k, u_k):
+        '''return z(k) = [x(k), u(k)]'''
+        return torch.cat((x_k, u_k), dim=1)
+
+    def train_loss(self, Is, loss_params):
+        if self.loss is None:
+            raise Exception('set_loss_fn() must be called')
+
         ykhat, yk = self._encode_decode(I_km1=Is[0], I_k=Is[1])
-        res = self.forward_F(Is, F)
+        res = self.forward_F(Is)
         res = [torch.cat(t, dim=2) for t in res]
         xkpred, ykpred, xkpredtruth, ykpredtruth = res
 
-        a, b, c = params['a'], params['b'], params['c']
+        a, b, c = loss_params['a'], loss_params['b'], loss_params['c']
 
         loss = a*self.loss(yk, ykhat) + b*self.loss(xkpred, xkpredtruth) + \
             c*self.loss(ykpred, ykpredtruth)
@@ -277,7 +303,9 @@ class TSNet(torch.nn.Module):
             u_seq[:, :, k] = self._u_k(I_k)
         return u_seq
 
-    # def loss(self):
+    def set_loss_fn(self, loss_fn):
+        self.loss = loss_fn
+        # def loss(self):
 
     def foward(self, x):
         print('warning: not implemented')
@@ -296,18 +324,29 @@ class TSDataSet(dset.Dataset):
             df = pd.read_feather(src)
             self.setup(df, test)
 
+        # self.loss = loss_fn
+
     def __len__(self):
         return self.len
 
-    def __getitem__(self, torch_idx):
+    def __getitem__(self, torch_idx, return_shape=False):
         y, u = self.data
 
-        idx = torch_idx + max(self.N_y, self.N_u)
+        idx = torch_idx + self.idx_offset
 
         I_list = [torch.tensor(([g for yk in y[idx+k:idx+k-self.N_y:-1] for g in yk] + (
             [g for uk in u[idx+k:idx+k-self.N_u:-1] for g in uk]))) for k in range(-1, self.N_pred + 1)]
         # returns { I_km1, I_k, I_kp1 ... }
-        return I_list
+
+        bad_shape = any(
+            [bool(x.shape[-1] != (self.N_u*self.nu + self.N_y*self.ny)) for x in I_list])
+        if bad_shape:
+            print('bad shape')
+
+        if return_shape:
+            return I_list, bad_shape
+        else:
+            return I_list
 
     def get_params(self,):
         return {
@@ -334,8 +373,13 @@ class TSDataSet(dset.Dataset):
 
         self.data = (y, u)
 
-        self.idx_offset = max(self.N_y, self.N_u)
-        self.len = len(df) - self.N_pred - self.idx_offset
+        self.idx_offset = max(self.N_y, self.N_u) + 1
+        self.len = len(df) - self.N_pred - self.idx_offset - 1
+
+        good_indices = [k for k in range(
+            len(df)) if not self.__getitem__(k, return_shape=True)[1]]
+
+        print('index div::',self.len - len(good_indices))
 
 
 class TSLoss(nn.Module):
