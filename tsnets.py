@@ -95,6 +95,8 @@ class TSNet(torch.nn.Module):
     def __init__(self, nx, nu, ny, N_y, N_u, loss_fn) -> None:
         super().__init__()
 
+        print('warning/note: was using wrong returns for _encode_decode, review all usage of it')
+
         self.ny = ny
         self.nu = nu
         self.nx = nx
@@ -192,24 +194,6 @@ class TSNet(torch.nn.Module):
 
         return xres_list, yres_list, xtruth_list, ytruth_list
 
-    def truths(self, Is):
-        '''returns estimated x(k) and reconstructed y(k) (canonically y hat) '''
-        batch_sz = Is[0].shape[0]
-        x_k_est = torch.zeros((batch_sz, self.nx, len(Is)-1))
-        y_k_rec = torch.zeros((batch_sz, self.ny, len(Is)-1))
-
-        # I_fm1, I_f = Is[0], Is[1]
-        # x_f, y_f = self._encode_decode(I_km1=I_fm1, I_k=I_f)
-
-        for f, (I_fm1, I_f) in enumerate(zip(Is[:-1], Is[1:])):
-            x_k, y_k = self._encode_decode(I_km1=I_fm1, I_k=I_f)
-
-            x_k_est[:, :, f] = x_k
-            y_k_rec[:, :, f] = y_k
-
-        # NOTE want estimate x(k+f), y(k+f), f = 1 to F
-        return x_k_est, y_k_rec
-
     def predict_F_steps(self, Is):
         # TODO rewrite, wtf was I doing?
 
@@ -237,8 +221,10 @@ class TSNet(torch.nn.Module):
             z_fp1_pred = self._z_k(x_k=x_fp1, I_k=I_fp1)
             y_fp1_pred = self._decode(z_k=z_fp1_pred)
 
-            x_fp1_truth, y_fp1_truth = self._encode_decode(
-                I_km1=I_f, I_k=I_fp1)
+            x_fp1_truth = self._encode(I_km1=I_f)
+            y_fp1_truth = self._y_k(I_fp1)
+
+            # raise Exception('using wrong returns for _encode_decode')
 
             x_fs[:, :, f] = x_fp1
             y_fs[:, :, f] = y_fp1_pred
@@ -278,12 +264,12 @@ class TSNet(torch.nn.Module):
         return loss
 
     def _encode_decode(self, I_km1, I_k):
-        '''returns estimated x(k) and reconstructed y(k) (canonically y hat) '''
+        '''returns x(k), reconstructed y hat(k), and y(k)'''
         x_k = self._encode(I_km1=I_km1)
         z_k = self._z_k(I_k=I_k, x_k=x_k)
         y_k_hat = self._decode(z_k=z_k)
 
-        return y_k_hat, self._y_k(I_k=I_k)
+        return x_k, y_k_hat, self._y_k(I_k=I_k)
 
     def _encode(self, I_km1):
         '''returns x(k) = e(I(k-1))'''
