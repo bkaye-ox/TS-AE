@@ -251,7 +251,7 @@ class TSNet(torch.nn.Module):
         if self.loss is None:
             raise Exception('set_loss_fn() must be called')
 
-        ykhat, yk = self._encode_decode(I_km1=Is[0], I_k=Is[1])
+        _, ykhat, yk = self._encode_decode(I_km1=Is[0], I_k=Is[1])
         res = self.forward_F(Is)
         res = [torch.cat(t, dim=2) for t in res]
         xkpred, ykpred, xkpredtruth, ykpredtruth = res
