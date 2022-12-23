@@ -3,9 +3,11 @@ import torch.nn as nn
 import torch.utils.data.dataset as dset
 import pandas as pd
 
+import io
+
 
 class LinNet(torch.nn.Module):
-    def __init__(self, dim_in, dim_out, hidden_struct=[30, 30, 30], activation=nn.SiLU) -> None:
+    def __init__(self, dim_in, dim_out, hidden_struct=[50, 50], activation=nn.SiLU) -> None:
         super().__init__()
         self.flatten = nn.Flatten()
 
@@ -97,6 +99,7 @@ class TSNet(torch.nn.Module):
         self.nu = nu
         self.nx = nx
         self.N_y = N_y
+        self.N_u = N_u
 
         nI = ny*N_y + nu*N_u  # length of Information vector
 
@@ -165,72 +168,23 @@ class TSNet(torch.nn.Module):
         ub = self.ny
         return I_k[:, lb:ub]
 
-    def predict_F_steps(self, Is, F):
-        # TODO rewrite, wtf was I doing?
-
-        F = len(Is[1:-1])
-
-        I_km1 = Is[0]
-        x_f = self._encode(I_km1=I_km1)
-        # _f regers to k+f index
-
-        batch_size = I_km1.shape[0]
-
-        y_fs = torch.zeros((batch_size, self.ny, F))
-        x_fs = torch.zeros((batch_size, self.nx, F))
-
-        # y_fs[:, :, 0] = y_fs
-
-        # assert  == F
-        for f, (I_f, I_fp1) in enumerate(zip(Is[1:-1], Is[2:])):
-            z_f = self._z_k(x_k=x_f, I_k=I_f)
-
-            x_fp1 = self._transition(z_km1=z_f)
-            x_fs[:, :, f] = x_fp1
-
-            z_kp1_pred = self._z_k(x_k=x_fp1, I_k=I_fp1)
-
-            y_fp1_pred = self._decode(z_k=z_kp1_pred)
-
-            y_fs[:, :, f] = y_fp1_pred
-
-            x_f = x_fp1
-
-        # predicted state vector k+1 to k+F, and predicted output k to k+F
-        return x_fs, y_fs
-
     def forward_F(self, Is):
-        # TODO figure out
-        batch_size = Is[0].shape[0]
 
         F = len(Is) - 2
-        if F <= 0:
-            raise Exception('insufficient Is supplied')
-
-        # y_k_est, x_kp1_pred, y_kp1_pred, y_kp1_est
-
-        # y_f_est = torch.zeros((batch_size, self.ny, F))
+        # if F <= 0:
+        #     raise Exception('insufficient Is supplied')
 
         xres_list = []
         yres_list = []
         xtruth_list = []
         ytruth_list = []
         for f in range(1, F+1):  # 1 to F-1
-            # y_k_est, x_kp1_pred, y_kp1_pred, y_kp1_est = self.forward(
-            #     Is[f:f+3])
-
-            u_r_seq = self._u_seq(Is[f:])
-
-            # predict to F
-            # x_fs_pred, y_fs_pred = self.predict_F_steps(
-            #     Is[f-1], u_r_seq, F-f+1)  # 1 to F-f, 0 to F-f
-
-            x_fs_pred, y_fs_pred = self.predict_F_steps(
-                Is[f-1:], F=F-f+1
+            # if len(Is[f-1:]) - (F-f+1) - 2 != 0:
+            #     print('warning')
+            x_fs_pred, y_fs_pred, x_truths, y_truths = self.predict_F_steps(
+                Is[f-1:]
             )
 
-            # NOTE - CHECK THAT THIS IS THE RIGHT SHAPE
-            x_truths, y_truths = self.truths(Is[f:])
             xres_list.append(x_fs_pred)
             yres_list.append(y_fs_pred)
             xtruth_list.append(x_truths)
@@ -243,12 +197,60 @@ class TSNet(torch.nn.Module):
         batch_sz = Is[0].shape[0]
         x_k_est = torch.zeros((batch_sz, self.nx, len(Is)-1))
         y_k_rec = torch.zeros((batch_sz, self.ny, len(Is)-1))
-        for k, (I_km1, I_k) in enumerate(zip(Is[:-1], Is[1:])):
-            x_k, y_k = self._encode_decode(I_km1=I_km1, I_k=I_k)
 
-            x_k_est[:, :, k] = x_k
-            y_k_rec[:, :, k] = y_k
+        # I_fm1, I_f = Is[0], Is[1]
+        # x_f, y_f = self._encode_decode(I_km1=I_fm1, I_k=I_f)
+
+        for f, (I_fm1, I_f) in enumerate(zip(Is[:-1], Is[1:])):
+            x_k, y_k = self._encode_decode(I_km1=I_fm1, I_k=I_f)
+
+            x_k_est[:, :, f] = x_k
+            y_k_rec[:, :, f] = y_k
+
+        # NOTE want estimate x(k+f), y(k+f), f = 1 to F
         return x_k_est, y_k_rec
+
+    def predict_F_steps(self, Is):
+        # TODO rewrite, wtf was I doing?
+
+        F = len(Is[1:-1])
+
+        I_km1, I_k = Is[0], Is[1]
+        x_f = self._encode(I_km1=I_km1)  # x(0)
+        z_f = self._z_k(x_k=x_f, I_k=I_k)  # z(0)
+        # _f regers to k+f index
+
+        batch_size = I_km1.shape[0]
+
+        y_fs = torch.zeros((batch_size, self.ny, F))
+        x_fs = torch.zeros((batch_size, self.nx, F))
+        y_fs_truth = torch.zeros((batch_size, self.ny, F))
+        x_fs_truth = torch.zeros((batch_size, self.nx, F))
+        # y_fs[:, :, 0] = y_fs
+
+        # assert  == F
+        for f, (I_f, I_fp1) in enumerate(zip(Is[1:-1], Is[2:])):
+            # for f, I_fp1 in enumerate(Is[2:]):
+
+            x_fp1 = self._transition(z_km1=z_f)  # x(f+1)
+
+            z_fp1_pred = self._z_k(x_k=x_fp1, I_k=I_fp1)
+            y_fp1_pred = self._decode(z_k=z_fp1_pred)
+
+            x_fp1_truth, y_fp1_truth = self._encode_decode(
+                I_km1=I_f, I_k=I_fp1)
+
+            x_fs[:, :, f] = x_fp1
+            y_fs[:, :, f] = y_fp1_pred
+
+            x_fs_truth[:, :, f] = x_fp1_truth
+            y_fs_truth[:, :, f] = y_fp1_truth
+
+            x_f = x_fp1
+            z_f = z_fp1_pred
+
+        # predicted state vector k+1 to k+F, and predicted output k+1 to k+F
+        return x_fs, y_fs, x_fs_truth, y_fs_truth
 
     def _z_k(self, I_k, x_k):
         '''return z(k) = [x(k), u(k)]'''
@@ -311,6 +313,26 @@ class TSNet(torch.nn.Module):
     def foward(self, x):
         print('warning: not implemented')
         return x
+
+    def _save_to_state_dict(self, destination, prefix, keep_vars):
+        self.eval()
+        params = {
+            'ny': self.ny,
+            'nu': self.nu,
+            'nx': self.nx,
+            'N_y': self.N_y,
+            'N_u': self.N_u,
+        }
+
+        destination['init_params'] = params
+
+        return super()._save_to_state_dict(destination, prefix, keep_vars, )
+
+    def load(state):
+        model = TSNet(**state['init_params'], loss_fn=nn.L1Loss())
+        del state['init_params']
+        model.load_state_dict(state)
+        return model
 
 
 class TSDataSet(dset.Dataset):
