@@ -11,10 +11,10 @@ print(f"Using {device} device")
 #
 main_settings = dict(
     src='ts.feather',
-    N_pred=10,
-    nx=4,
-    N_y=5,
-    N_u=5,
+    N_pred=3,
+    nx=6,
+    N_y=30,
+    N_u=30,
 
 )
 train_ds = tsnets.TSDataSet(**main_settings, test=False)
@@ -67,7 +67,7 @@ def train(dataloader, model,  loss_params, optimizer, N_epochs, losses):
 
 losses = []
 
-num_epochs = 150
+num_epochs = 20
 
 train(dataloader=loader, model=model, loss_params=phase1_loss,
       optimizer=optimizer, N_epochs=num_epochs, losses=losses)

@@ -5,22 +5,23 @@ import pandas as pd
 
 
 class LinNet(torch.nn.Module):
-    def __init__(self, dim_in, dim_out) -> None:
+    def __init__(self, dim_in, dim_out, hidden_struct=[30, 30, 30], activation=nn.SiLU) -> None:
         super().__init__()
         self.flatten = nn.Flatten()
-        self.relunet = nn.Sequential(
-            nn.Linear(in_features=dim_in, out_features=30),
-            nn.SiLU(),
-            nn.Linear(in_features=30, out_features=30),
-            nn.SiLU(),
-            nn.Linear(in_features=30, out_features=30),
-            nn.SiLU()
+
+        hidden_struct.insert(0, dim_in)
+        args = [z for x, y in zip(hidden_struct[:-1], hidden_struct[1:])
+                for z in (nn.Linear(in_features=x, out_features=y), activation())]
+
+        self.mlp = nn.Sequential(
+            *args,
         )
-        self.lin = nn.Linear(in_features=30, out_features=dim_out)
+        self.lin = nn.Linear(
+            in_features=hidden_struct[-1], out_features=dim_out)
 
     def forward(self, x):
         y = self.flatten(x)
-        p = self.relunet(y)
+        p = self.mlp(y)
         return self.lin(p)
 
 
@@ -164,13 +165,13 @@ class TSNet(torch.nn.Module):
         ub = self.ny
         return I_k[:, lb:ub]
 
-    def predict_F_steps(self, I_km1, u_seq, F):
+    def predict_F_steps(self, Is, F):
         # TODO rewrite, wtf was I doing?
 
-        # u_seq from k to k + F, dim {batch, nu, F}
+        F = len(Is[1:-1])
 
+        I_km1 = Is[0]
         x_f = self._encode(I_km1=I_km1)
-
         # _f regers to k+f index
 
         batch_size = I_km1.shape[0]
@@ -180,20 +181,15 @@ class TSNet(torch.nn.Module):
 
         # y_fs[:, :, 0] = y_fs
 
-        for f in range(F):
-            u_k = u_seq[:, :, f]
-            # z_f = torch.cat((x_f, u_k), dim=1)
-
-            z_f = TSNet._z_k_alt(x_k=x_f, u_k=u_k)
-            # z_f =
+        # assert  == F
+        for f, (I_f, I_fp1) in enumerate(zip(Is[1:-1], Is[2:])):
+            z_f = self._z_k(x_k=x_f, I_k=I_f)
 
             x_fp1 = self._transition(z_km1=z_f)
             x_fs[:, :, f] = x_fp1
 
-            u_kp1 = u_seq[:, :, f]
+            z_kp1_pred = self._z_k(x_k=x_fp1, I_k=I_fp1)
 
-            # z_kp1_pred = torch.cat((x_fp1, u_kp1), dim=1)
-            z_kp1_pred = TSNet._z_k_alt(x_k=x_fp1, u_k=u_kp1)
             y_fp1_pred = self._decode(z_k=z_kp1_pred)
 
             y_fs[:, :, f] = y_fp1_pred
@@ -226,8 +222,13 @@ class TSNet(torch.nn.Module):
             u_r_seq = self._u_seq(Is[f:])
 
             # predict to F
+            # x_fs_pred, y_fs_pred = self.predict_F_steps(
+            #     Is[f-1], u_r_seq, F-f+1)  # 1 to F-f, 0 to F-f
+
             x_fs_pred, y_fs_pred = self.predict_F_steps(
-                Is[f-1], u_r_seq, F-f+1)  # 1 to F-f, 0 to F-f
+                Is[f-1:], F=F-f+1
+            )
+
             # NOTE - CHECK THAT THIS IS THE RIGHT SHAPE
             x_truths, y_truths = self.truths(Is[f:])
             xres_list.append(x_fs_pred)
@@ -340,8 +341,8 @@ class TSDataSet(dset.Dataset):
 
         bad_shape = any(
             [bool(x.shape[-1] != (self.N_u*self.nu + self.N_y*self.ny)) for x in I_list])
-        if bad_shape:
-            print('bad shape')
+        # if bad_shape:
+        #     print('bad shape')
 
         if return_shape:
             return I_list, bad_shape
@@ -379,7 +380,7 @@ class TSDataSet(dset.Dataset):
         good_indices = [k for k in range(
             len(df)) if not self.__getitem__(k, return_shape=True)[1]]
 
-        print('index div::',self.len - len(good_indices))
+        print('index div::', self.len - len(good_indices))
 
 
 class TSLoss(nn.Module):
