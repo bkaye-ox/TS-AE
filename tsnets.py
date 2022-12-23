@@ -180,19 +180,19 @@ class TSNet(torch.nn.Module):
         yres_list = []
         xtruth_list = []
         ytruth_list = []
-        for f in range(1, F+1):  # 1 to F-1
-            # if len(Is[f-1:]) - (F-f+1) - 2 != 0:
-            #     print('warning')
-            x_fs_pred, y_fs_pred, x_truths, y_truths = self.predict_F_steps(
-                Is[f-1:]
-            )
+        # for f in range(1, F+1):  # 1 to F-1
+        x_fs_pred, y_fs_pred, x_truths, y_truths = self.predict_F_steps(
+            # Is[f-1:]
+            Is
+        )
 
-            xres_list.append(x_fs_pred)
-            yres_list.append(y_fs_pred)
-            xtruth_list.append(x_truths)
-            ytruth_list.append(y_truths)
+            # xres_list.append(x_fs_pred)
+            # yres_list.append(y_fs_pred)
+            # xtruth_list.append(x_truths)
+            # ytruth_list.append(y_truths)
 
-        return xres_list, yres_list, xtruth_list, ytruth_list
+        # return xres_list, yres_list, xtruth_list, ytruth_list
+        return x_fs_pred, y_fs_pred, x_truths, y_truths
 
     def predict_F_steps(self, Is):
         # TODO rewrite, wtf was I doing?
@@ -253,7 +253,7 @@ class TSNet(torch.nn.Module):
 
         _, ykhat, yk = self._encode_decode(I_km1=Is[0], I_k=Is[1])
         res = self.forward_F(Is)
-        res = [torch.cat(t, dim=2) for t in res]
+        # res = [torch.cat(t, dim=2) for t in res]
         xkpred, ykpred, xkpredtruth, ykpredtruth = res
 
         a, b, c = loss_params['a'], loss_params['b'], loss_params['c']
@@ -347,12 +347,12 @@ class TSDataSet(dset.Dataset):
             [g for uk in u[idx+k:idx+k-self.N_u:-1] for g in uk]))) for k in range(-1, self.N_pred + 1)]
         # returns { I_km1, I_k, I_kp1 ... }
 
-        bad_shape = any(
-            [bool(x.shape[-1] != (self.N_u*self.nu + self.N_y*self.ny)) for x in I_list])
         # if bad_shape:
         #     print('bad shape')
 
         if return_shape:
+            bad_shape = any(
+                [bool(x.shape[-1] != (self.N_u*self.nu + self.N_y*self.ny)) for x in I_list])
             return I_list, bad_shape
         else:
             return I_list

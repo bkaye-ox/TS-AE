@@ -10,11 +10,11 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Using {device} device")
 #
 main_settings = dict(
-    src='ts.feather',
-    N_pred=3,
+    src='synth.feather',
+    N_pred=2,
     nx=6,
-    N_y=30,
-    N_u=30,
+    N_y=3,
+    N_u=2,
 
 )
 train_ds = tsnets.TSDataSet(**main_settings, test=False)
@@ -27,8 +27,8 @@ test_dataloader = tdata.DataLoader(test_ds, batch_size=128, drop_last=True)
 params = train_ds.get_params() | dict(loss_fn=torch.nn.L1Loss())
 model = tsnets.TSNet(**params)
 
-phase1_loss = dict(a=10., b=0.3, c=0.)
-phase2_loss = dict(a=0., b=10., c=1.)
+phase1_loss = dict(a=10.0, b=0.3, c=0)
+phase2_loss = dict(a=1, b=10, c=0.1)
 
 
 optimizer = torch.optim.Adam(model.parameters(), weight_decay=1e-5)
@@ -67,7 +67,7 @@ def train(dataloader, model,  loss_params, optimizer, N_epochs, losses):
 
 losses = []
 
-num_epochs = 20
+num_epochs = 1
 
 train(dataloader=loader, model=model, loss_params=phase1_loss,
       optimizer=optimizer, N_epochs=num_epochs, losses=losses)
@@ -77,7 +77,7 @@ train(dataloader=loader, model=model, loss_params=phase2_loss,
 model.eval()
 
 px.line(y=losses, log_y=True).show()
-input()
+# input()
 res = []
 for I in test_dataloader:
     with torch.no_grad():
